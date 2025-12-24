@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    @apply antialiased;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 bg-ng-green-500 text-white font-semibold rounded-xl hover:bg-ng-green-600 transition-all duration-200 shadow-lg shadow-ng-green-500/25 hover:shadow-xl hover:shadow-ng-green-500/30 active:scale-[0.98];
+  }
+  
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 bg-white text-ng-green-600 font-semibold rounded-xl border-2 border-ng-green-500 hover:bg-ng-green-50 transition-all duration-200;
+  }
+  
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-slate-600 font-medium rounded-lg hover:bg-slate-100 transition-colors;
+  }
+  
+  .card {
+    @apply bg-white rounded-2xl p-6 shadow-sm border border-slate-100;
+  }
+  
+  .card-interactive {
+    @apply bg-white rounded-2xl p-6 shadow-sm border border-slate-100 hover:shadow-md hover:border-ng-green-200 transition-all duration-200 cursor-pointer;
+  }
+  
+  .badge {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-sm font-medium;
+  }
+  
+  .input {
+    @apply w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-ng-green-500 focus:ring-2 focus:ring-ng-green-500/20 outline-none transition-all;
+  }
+  
+  .label {
+    @apply block text-sm font-medium text-slate-700 mb-2;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .gradient-text {
+    @apply bg-gradient-to-r from-ng-green-600 to-ng-green-400 bg-clip-text text-transparent;
+  }
+}
+
+

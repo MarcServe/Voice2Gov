@@ -1,7 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
-from .routers import auth, representatives, petitions, social, legal
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+try:
+    from .routers import auth, representatives, petitions, social, legal
+except ImportError as e:
+    logger.error(f"Failed to import routers: {e}")
+    raise
 
 # Create FastAPI app
 app = FastAPI(
@@ -34,11 +44,16 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
-app.include_router(representatives.router, prefix="/api/representatives", tags=["Representatives"])
-app.include_router(petitions.router, prefix="/api/petitions", tags=["Petitions"])
-app.include_router(social.router, prefix="/api/social", tags=["Social Media"])
-app.include_router(legal.router, prefix="/api/legal", tags=["Legal"])
+try:
+    app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
+    app.include_router(representatives.router, prefix="/api/representatives", tags=["Representatives"])
+    app.include_router(petitions.router, prefix="/api/petitions", tags=["Petitions"])
+    app.include_router(social.router, prefix="/api/social", tags=["Social Media"])
+    app.include_router(legal.router, prefix="/api/legal", tags=["Legal"])
+    logger.info("All routers loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to include routers: {e}")
+    raise
 
 
 @app.get("/")

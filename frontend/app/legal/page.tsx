@@ -577,8 +577,23 @@ export default function LegalPage() {
                     ? 'bg-red-500 text-white scale-110 animate-pulse'
                     : 'bg-ng-green-500 text-white hover:bg-ng-green-600 hover:scale-105'
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
+                title={isListening ? 'Stop listening' : 'Start listening'}
               >
                 {isListening ? <MicOff className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
+              </button>
+
+              {/* Test API Button - for debugging */}
+              <button
+                onClick={async () => {
+                  const testQuestion = "What are my rights as a tenant?"
+                  console.log('🧪 Testing API with question:', testQuestion)
+                  await handleVoiceQuestion(testQuestion)
+                }}
+                disabled={voiceProcessing || isSpeaking}
+                className="px-4 py-2 text-xs bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 disabled:opacity-50"
+                title="Test API connection"
+              >
+                Test API
               </button>
 
               <div className="w-20 text-center">

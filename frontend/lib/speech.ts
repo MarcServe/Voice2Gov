@@ -155,7 +155,11 @@ class TextToSpeech {
         resolve()
       }
 
-      this.synth.speak(this.utterance)
+      if (this.synth) {
+        this.synth.speak(this.utterance)
+      } else {
+        resolve()
+      }
     })
   }
 

@@ -27,8 +27,10 @@ except Exception as e:
     logger.error("The app will start but database operations will fail")
     # Don't raise - allow app to start for health checks
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Create session factory (only if engine exists)
+SessionLocal = None
+if engine:
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Create base class for models
 Base = declarative_base()

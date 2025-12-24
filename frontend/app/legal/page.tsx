@@ -172,14 +172,24 @@ export default function LegalPage() {
     // Stop any ongoing speech
     stopSpeaking()
 
+    // Request microphone permission (if not already granted)
     try {
+      console.log('Requesting microphone permission in startVoiceListening...')
       await navigator.mediaDevices.getUserMedia({ audio: true })
+      console.log('Microphone permission granted')
     } catch (permissionErr: any) {
+      console.error('Microphone permission error:', permissionErr)
       if (permissionErr.name === 'NotAllowedError' || permissionErr.name === 'PermissionDeniedError') {
-        setError('Microphone permission denied. Please allow microphone access.')
+        setError('Microphone permission denied. Please allow microphone access in your browser settings.')
+        setIsListening(false)
         return
       } else if (permissionErr.name === 'NotFoundError') {
         setError('No microphone found. Please connect a microphone.')
+        setIsListening(false)
+        return
+      } else {
+        setError(`Microphone error: ${permissionErr.message}`)
+        setIsListening(false)
         return
       }
     }
@@ -187,6 +197,7 @@ export default function LegalPage() {
     setError(null)
     setVoiceTranscript('')
     setIsListening(true)
+    console.log('Starting speech recognition...')
 
     try {
       sttRef.current.start(
@@ -412,6 +423,23 @@ export default function LegalPage() {
               onClick={async () => {
                 setVoiceMode(true)
                 setResult(null)
+                
+                // Request microphone permission immediately
+                try {
+                  console.log('Requesting microphone permission...')
+                  await navigator.mediaDevices.getUserMedia({ audio: true })
+                  console.log('Microphone permission granted')
+                } catch (permissionErr: any) {
+                  console.error('Microphone permission error:', permissionErr)
+                  if (permissionErr.name === 'NotAllowedError' || permissionErr.name === 'PermissionDeniedError') {
+                    setError('Microphone permission denied. Please allow microphone access in your browser settings.')
+                    return
+                  } else if (permissionErr.name === 'NotFoundError') {
+                    setError('No microphone found. Please connect a microphone.')
+                    return
+                  }
+                }
+                
                 if (conversation.length === 0) {
                   // Start with a greeting
                   const greeting = "Hello! I'm your Nigerian legal assistant. I can help you understand your rights under Nigerian law. What would you like to know?"
@@ -422,6 +450,7 @@ export default function LegalPage() {
                     // Ensure mic starts after greeting (backup in case onEnd doesn't fire)
                     setTimeout(() => {
                       if (voiceMode && !isListening && !isSpeaking) {
+                        console.log('Starting voice listening after greeting...')
                         startVoiceListening()
                       }
                     }, 1500)
@@ -429,6 +458,7 @@ export default function LegalPage() {
                 } else {
                   // If conversation already exists, just start listening
                   if (!isListening && !isSpeaking) {
+                    console.log('Starting voice listening (existing conversation)...')
                     startVoiceListening()
                   }
                 }

@@ -226,6 +226,7 @@ export default function LegalPage() {
   const handleVoiceQuestion = async (questionText: string) => {
     if (!questionText.trim()) return
 
+    console.log('Handling voice question:', questionText)
     setVoiceProcessing(true)
     const userMessage: ConversationMessage = { role: 'user', content: questionText, timestamp: new Date() }
     
@@ -237,6 +238,7 @@ export default function LegalPage() {
     })
 
     try {
+      console.log('Calling /api/legal/chat with messages:', updatedConversation.length)
       // Use the chat API for real-time conversation
       const response = await fetch('/api/legal/chat', {
         method: 'POST',
@@ -247,9 +249,21 @@ export default function LegalPage() {
         }),
       })
 
-      if (!response.ok) throw new Error('Failed to get response')
+      console.log('API response status:', response.status)
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('API error:', response.status, errorText)
+        throw new Error(`API error: ${response.status} - ${errorText}`)
+      }
 
       const data = await response.json()
+      console.log('API response data:', data)
+      
+      if (!data.response) {
+        throw new Error('No response from API')
+      }
+
       const assistantMessage: ConversationMessage = { 
         role: 'assistant', 
         content: data.response, 
@@ -266,14 +280,23 @@ export default function LegalPage() {
         })
       }
       
-      speakAnswer(data.response)
-    } catch (err) {
-      setError('Failed to get response. Please try again.')
+      console.log('Speaking answer:', data.response.substring(0, 50))
+      await speakAnswer(data.response)
+    } catch (err: any) {
+      console.error('Error in handleVoiceQuestion:', err)
+      const errorMessage = err.message || 'Failed to get response. Please try again.'
+      setError(errorMessage)
       setConversation(prev => [...prev, { 
         role: 'assistant', 
-        content: "I'm sorry, I couldn't process that. Could you try asking again?", 
+        content: `I'm sorry, I couldn't process that. ${errorMessage.includes('OpenAI') ? 'The AI service may not be configured.' : 'Please try again.'}`, 
         timestamp: new Date() 
       }])
+      // Still try to restart listening even on error
+      if (voiceMode && !isListening) {
+        setTimeout(() => {
+          startVoiceListening()
+        }, 2000)
+      }
     } finally {
       setVoiceProcessing(false)
     }

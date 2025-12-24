@@ -138,12 +138,12 @@ export default function ImportPage() {
           let existingRep = null
           const { data: existingReps } = await supabase
             .from('representatives')
-            .select('id, name, chamber, state_id, constituency, senatorial_district')
+            .select('id, name, chamber, state_id, constituency, senatorial_district, lga_id')
             .eq('name', row.name)
             .eq('chamber', chamber)
             .eq('state_id', stateId)
             .limit(1)
-            .single()
+            .maybeSingle()
 
           if (existingReps) {
             existingRep = existingReps

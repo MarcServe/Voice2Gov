@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       .toLowerCase()
       .replace(/[?.,!]/g, '')
       .split(' ')
-      .filter(w => w.length > 3 && !['what', 'are', 'the', 'for', 'how', 'can', 'does', 'this', 'that', 'with', 'about', 'rights', 'right', 'nigerian', 'nigeria', 'child', 'person'].includes(w))
+      .filter((w: string) => w.length > 3 && !['what', 'are', 'the', 'for', 'how', 'can', 'does', 'this', 'that', 'with', 'about', 'rights', 'right', 'nigerian', 'nigeria', 'child', 'person'].includes(w))
 
     // Build search query for each keyword
     let sections: any[] = []

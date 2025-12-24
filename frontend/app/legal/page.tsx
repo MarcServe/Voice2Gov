@@ -200,26 +200,39 @@ export default function LegalPage() {
     console.log('Starting speech recognition...')
 
     try {
+      console.log('Starting speech recognition with language:', selectedLanguage)
       sttRef.current.start(
         (result) => {
-          if (result.isFinal) {
+          console.log('Speech recognition result:', { 
+            transcript: result.transcript.substring(0, 50), 
+            isFinal: result.isFinal,
+            confidence: result.confidence 
+          })
+          
+          if (result.isFinal && result.transcript.trim()) {
+            const transcript = result.transcript.trim()
+            console.log('Final transcript received:', transcript)
             setVoiceTranscript('')
-            handleVoiceQuestion(result.transcript.trim())
+            setIsListening(false) // Stop listening while processing
+            handleVoiceQuestion(transcript)
             // Auto-restart listening after processing
             setTimeout(() => {
-              if (voiceMode && !isSpeaking) {
+              if (voiceMode && !isSpeaking && !isListening) {
+                console.log('Auto-restarting listening after question processed')
                 startVoiceListening()
               }
-            }, 1000)
+            }, 2000) // Give more time for API call
           } else {
+            // Show interim results
             setVoiceTranscript(result.transcript)
           }
         },
         (err) => {
+          console.error('Speech recognition error:', err)
           setError(err.message)
           setIsListening(false)
         },
-        { lang: selectedLanguage, continuous: false }
+        { lang: selectedLanguage, continuous: false } // false = stops after silence, better for question-answer flow
       )
     } catch (err: any) {
       setError(err.message || 'Failed to start speech recognition')

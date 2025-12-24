@@ -296,8 +296,33 @@ class SpeechRecognition {
     try {
       // Configure recognition
       this.recognition.lang = options.lang || 'en-NG'
-      this.recognition.continuous = options.continuous ?? true
+      this.recognition.continuous = options.continuous ?? false // Changed to false - stops after silence
       this.recognition.interimResults = true
+      
+      // Set a timeout for silence detection (stops listening after user stops speaking)
+      // This helps detect when user finishes their question
+      
+      // Handle when recognition ends (user stopped speaking)
+      this.recognition.onend = () => {
+        console.log('Speech recognition ended')
+        this.isListening = false
+        
+        // If we're supposed to be listening continuously, restart
+        if (options.continuous && this.onResultCallback) {
+          setTimeout(() => {
+            if (this.isListening) {
+              console.log('Restarting continuous speech recognition...')
+              this.start(this.onResultCallback!, this.onErrorCallback || undefined, options)
+            }
+          }, 500)
+        }
+      }
+      
+      // Handle when recognition starts
+      this.recognition.onstart = () => {
+        console.log('Speech recognition started')
+        this.isListening = true
+      }
 
       // Handle results
       this.recognition.onresult = (event: any) => {

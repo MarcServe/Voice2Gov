@@ -300,10 +300,14 @@ export default function LegalPage() {
           onEnd: () => {
             setIsSpeaking(false)
             // Auto-restart listening after speaking ends
+            console.log('Speech ended, restarting listening...', { voiceMode, isListening, isSpeaking })
             if (voiceMode && !isListening) {
               setTimeout(() => {
-                startVoiceListening()
-              }, 500)
+                console.log('Starting voice listening after speech end')
+                startVoiceListening().catch(err => {
+                  console.error('Failed to restart listening:', err)
+                })
+              }, 800)
             }
           }
         })
@@ -314,10 +318,14 @@ export default function LegalPage() {
           onEnd: () => {
             setIsSpeaking(false)
             // Auto-restart listening after speaking ends
+            console.log('Speech ended, restarting listening...', { voiceMode, isListening, isSpeaking })
             if (voiceMode && !isListening) {
               setTimeout(() => {
-                startVoiceListening()
-              }, 500)
+                console.log('Starting voice listening after speech end')
+                startVoiceListening().catch(err => {
+                  console.error('Failed to restart listening:', err)
+                })
+              }, 800)
             }
           }
         })
@@ -385,10 +393,21 @@ export default function LegalPage() {
                   // Start with a greeting
                   const greeting = "Hello! I'm your Nigerian legal assistant. I can help you understand your rights under Nigerian law. What would you like to know?"
                   setConversation([{ role: 'assistant', content: greeting, timestamp: new Date() }])
-                  // Wait a bit for TTS to initialize
+                  // Wait a bit for TTS to initialize, then speak and auto-start mic
                   setTimeout(async () => {
                     await speakAnswer(greeting)
+                    // Ensure mic starts after greeting (backup in case onEnd doesn't fire)
+                    setTimeout(() => {
+                      if (voiceMode && !isListening && !isSpeaking) {
+                        startVoiceListening()
+                      }
+                    }, 1500)
                   }, 300)
+                } else {
+                  // If conversation already exists, just start listening
+                  if (!isListening && !isSpeaking) {
+                    startVoiceListening()
+                  }
                 }
               }}
               className={`px-6 py-2 rounded-lg font-medium transition-colors ${

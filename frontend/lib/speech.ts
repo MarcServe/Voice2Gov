@@ -163,12 +163,16 @@ class TextToSpeech {
     })
   }
 
-  private async speakWithElevenLabs(text: string, options: TTSOptions) {
+  private async speakWithElevenLabs(text: string, options: TTSOptions): Promise<void> {
     const voiceId = options.voiceId || options.voice
     
     if (!voiceId) {
       console.error('ElevenLabs voiceId is required')
-      return
+      // Fallback to browser TTS
+      if (this.synth) {
+        return this.speak(text, { ...options, useElevenLabs: false })
+      }
+      return Promise.resolve()
     }
 
     try {
@@ -190,25 +194,50 @@ class TextToSpeech {
       const audioUrl = URL.createObjectURL(audioBlob)
       const audio = new Audio(audioUrl)
       
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl)
-        if (options.onEnd) {
-          options.onEnd()
+      return new Promise<void>((resolve) => {
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl)
+          if (options.onEnd) {
+            options.onEnd()
+          }
+          resolve()
         }
-      }
-      
-      audio.onerror = () => {
-        URL.revokeObjectURL(audioUrl)
-        console.error('Error playing ElevenLabs audio')
-      }
+        
+        audio.onerror = (err) => {
+          URL.revokeObjectURL(audioUrl)
+          console.error('Error playing ElevenLabs audio:', err)
+          // Still call onEnd to continue conversation flow
+          if (options.onEnd) {
+            options.onEnd()
+          }
+          resolve()
+        }
 
-      await audio.play()
+        audio.play().catch((err) => {
+          console.error('Error playing audio:', err)
+          URL.revokeObjectURL(audioUrl)
+          // Fallback to browser TTS
+          if (this.synth) {
+            this.speak(text, { ...options, useElevenLabs: false }).then(resolve)
+          } else {
+            if (options.onEnd) {
+              options.onEnd()
+            }
+            resolve()
+          }
+        })
+      })
     } catch (error) {
       console.error('ElevenLabs TTS error:', error)
       // Fallback to browser TTS
       if (this.synth) {
-        this.speak(text, { ...options, useElevenLabs: false })
+        return this.speak(text, { ...options, useElevenLabs: false })
       }
+      // If no fallback, still call onEnd to continue flow
+      if (options.onEnd) {
+        options.onEnd()
+      }
+      return Promise.resolve()
     }
   }
 

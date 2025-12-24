@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "Voice2Gov API"
     debug: bool = True
     
-    # Database
+    # Database - reads from DATABASE_URL environment variable
     database_url: str = "postgresql://postgres:postgres@localhost:5432/voice2gov"
     
     # JWT Authentication
@@ -30,14 +30,21 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
+    
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    
     # Grok/X
     grok_api_key: str = ""
     
+    # Supabase (for direct database access)
+    supabase_url: str = ""
+    supabase_key: str = ""
+    
     class Config:
         env_file = ".env"
+        case_sensitive = False
 
 
 @lru_cache()

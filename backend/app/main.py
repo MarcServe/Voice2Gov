@@ -13,13 +13,21 @@ app = FastAPI(
 )
 
 # Configure CORS
+# Allow origins from environment variable or default to localhost
+import os
+allowed_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001"
+).split(",")
+
+# Add Vercel preview and production URLs if provided
+vercel_url = os.getenv("VERCEL_URL")
+if vercel_url:
+    allowed_origins.append(f"https://{vercel_url}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://voice2gov.ng",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

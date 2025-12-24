@@ -12,7 +12,11 @@ import { supabase } from '@/lib/supabase'
 interface ImportResult {
   success: number
   failed: number
+  skipped: number
+  updated: number
   errors: string[]
+  skippedItems: string[]
+  updatedItems: string[]
 }
 
 export default function ImportPage() {
@@ -20,6 +24,7 @@ export default function ImportPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [csvData, setCsvData] = useState('')
+  const [duplicateAction, setDuplicateAction] = useState<'skip' | 'update'>('skip')
 
   const sampleCSV = `name,title,chamber,party,state,lga,constituency,senatorial_district,email,phone
 "John Doe","Senator","SENATE","APC","Lagos","","","Lagos West","john.doe@nass.gov.ng","08012345678"
@@ -86,7 +91,15 @@ export default function ImportPage() {
     setLoading(true)
     setResult(null)
 
-    const importResult: ImportResult = { success: 0, failed: 0, errors: [] }
+    const importResult: ImportResult = { 
+      success: 0, 
+      failed: 0, 
+      skipped: 0,
+      updated: 0,
+      errors: [],
+      skippedItems: [],
+      updatedItems: []
+    }
 
     try {
       const rows = parseCSV(csvData)
@@ -117,31 +130,95 @@ export default function ImportPage() {
             lgaId = lga?.id || null
           }
 
-          // Insert representative
-          const { data: rep, error: repError } = await supabase
+          const chamber = row.chamber || 'SENATE'
+          
+          // Check for existing representative (duplicate check)
+          // Match by: name + chamber + state (basic match)
+          // For more specific: also check constituency/senatorial_district if provided
+          let existingRep = null
+          const { data: existingReps } = await supabase
             .from('representatives')
-            .insert({
-              name: row.name,
-              title: row.title || null,
-              chamber: row.chamber || 'SENATE',
-              party: row.party || null,
-              state_id: stateId,
-              lga_id: lgaId,
-              constituency: row.constituency || null,
-              senatorial_district: row.senatorial_district || null,
-              is_active: true
-            })
-            .select()
+            .select('id, name, chamber, state_id, constituency, senatorial_district')
+            .eq('name', row.name)
+            .eq('chamber', chamber)
+            .eq('state_id', stateId)
+            .limit(1)
             .single()
 
-          if (repError) {
-            importResult.errors.push(`Failed to import ${row.name}: ${repError.message}`)
-            importResult.failed++
-            continue
+          if (existingReps) {
+            existingRep = existingReps
           }
 
-          // Insert contact info
+          let rep
+          if (existingRep) {
+            // Duplicate found - handle based on user preference
+            if (duplicateAction === 'skip') {
+              importResult.skipped++
+              importResult.skippedItems.push(`${row.name} (${chamber}, ${row.state})`)
+              continue
+            } else if (duplicateAction === 'update') {
+              // Update existing representative
+              const { data: updatedRep, error: updateError } = await supabase
+                .from('representatives')
+                .update({
+                  title: row.title || existingRep.title || null,
+                  party: row.party || existingRep.party || null,
+                  lga_id: lgaId || existingRep.lga_id || null,
+                  constituency: row.constituency || existingRep.constituency || null,
+                  senatorial_district: row.senatorial_district || existingRep.senatorial_district || null,
+                  is_active: true,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', existingRep.id)
+                .select()
+                .single()
+
+              if (updateError) {
+                importResult.errors.push(`Failed to update ${row.name}: ${updateError.message}`)
+                importResult.failed++
+                continue
+              }
+
+              rep = updatedRep
+              importResult.updated++
+              importResult.updatedItems.push(`${row.name} (${chamber}, ${row.state})`)
+            }
+          } else {
+            // No duplicate - insert new representative
+            const { data: newRep, error: repError } = await supabase
+              .from('representatives')
+              .insert({
+                name: row.name,
+                title: row.title || null,
+                chamber: chamber,
+                party: row.party || null,
+                state_id: stateId,
+                lga_id: lgaId,
+                constituency: row.constituency || null,
+                senatorial_district: row.senatorial_district || null,
+                is_active: true
+              })
+              .select()
+              .single()
+
+            if (repError) {
+              importResult.errors.push(`Failed to import ${row.name}: ${repError.message}`)
+              importResult.failed++
+              continue
+            }
+
+            rep = newRep
+            importResult.success++
+          }
+
+          // Handle contact info (for both new and updated records)
           if (rep) {
+            // Delete existing contact info if updating
+            if (existingRep && duplicateAction === 'update') {
+              await supabase.from('contact_info').delete().eq('representative_id', rep.id)
+            }
+
+            // Insert/update contact info
             if (row.email) {
               await supabase.from('contact_info').insert({
                 representative_id: rep.id,
@@ -159,8 +236,6 @@ export default function ImportPage() {
               })
             }
           }
-
-          importResult.success++
         } catch (err) {
           importResult.errors.push(`Error importing ${row.name}: ${err}`)
           importResult.failed++
@@ -265,6 +340,38 @@ export default function ImportPage() {
           />
         </div>
 
+        {/* Duplicate Handling Options */}
+        <div className="card mb-6">
+          <h2 className="font-semibold text-lg text-slate-900 mb-4">Duplicate Handling</h2>
+          <p className="text-sm text-slate-600 mb-4">
+            How should duplicate representatives be handled? (Duplicates are detected by matching name + chamber + state)
+          </p>
+          <div className="flex gap-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="duplicateAction"
+                value="skip"
+                checked={duplicateAction === 'skip'}
+                onChange={(e) => setDuplicateAction(e.target.value as 'skip' | 'update')}
+                className="rounded"
+              />
+              <span className="text-slate-700">Skip duplicates (recommended)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="duplicateAction"
+                value="update"
+                checked={duplicateAction === 'update'}
+                onChange={(e) => setDuplicateAction(e.target.value as 'skip' | 'update')}
+                className="rounded"
+              />
+              <span className="text-slate-700">Update existing records</span>
+            </label>
+          </div>
+        </div>
+
         {/* Import Button */}
         <div className="flex justify-end mb-6">
           <button
@@ -291,11 +398,23 @@ export default function ImportPage() {
           <div className="card">
             <h2 className="font-semibold text-lg text-slate-900 mb-4">Import Results</h2>
             
-            <div className="flex gap-4 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
               <div className="flex items-center gap-2 text-green-600">
                 <CheckCircle className="w-5 h-5" />
-                <span>{result.success} successful</span>
+                <span>{result.success} new</span>
               </div>
+              {result.updated > 0 && (
+                <div className="flex items-center gap-2 text-blue-600">
+                  <CheckCircle className="w-5 h-5" />
+                  <span>{result.updated} updated</span>
+                </div>
+              )}
+              {result.skipped > 0 && (
+                <div className="flex items-center gap-2 text-amber-600">
+                  <AlertCircle className="w-5 h-5" />
+                  <span>{result.skipped} skipped</span>
+                </div>
+              )}
               {result.failed > 0 && (
                 <div className="flex items-center gap-2 text-red-600">
                   <AlertCircle className="w-5 h-5" />
@@ -303,6 +422,34 @@ export default function ImportPage() {
                 </div>
               )}
             </div>
+
+            {result.skippedItems.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                <h3 className="font-medium text-amber-800 mb-2">Skipped Duplicates ({result.skippedItems.length}):</h3>
+                <ul className="list-disc list-inside text-sm text-amber-700 space-y-1">
+                  {result.skippedItems.slice(0, 10).map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                  {result.skippedItems.length > 10 && (
+                    <li>...and {result.skippedItems.length - 10} more</li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            {result.updatedItems.length > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                <h3 className="font-medium text-blue-800 mb-2">Updated Records ({result.updatedItems.length}):</h3>
+                <ul className="list-disc list-inside text-sm text-blue-700 space-y-1">
+                  {result.updatedItems.slice(0, 10).map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                  {result.updatedItems.length > 10 && (
+                    <li>...and {result.updatedItems.length - 10} more</li>
+                  )}
+                </ul>
+              </div>
+            )}
 
             {result.errors.length > 0 && (
               <div className="bg-red-50 border border-red-200 rounded-lg p-4">

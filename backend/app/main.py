@@ -67,5 +67,11 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    """Health check endpoint - doesn't require database"""
+    import os
+    return {
+        "status": "healthy",
+        "database_configured": bool(os.getenv("DATABASE_URL")),
+        "version": "1.0.0"
+    }
 

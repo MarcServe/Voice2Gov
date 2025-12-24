@@ -375,14 +375,11 @@ class SpeechRecognition {
         this.isListening = false
       }
 
-      // Handle end
-      this.recognition.onend = () => {
-        this.isListening = false
-      }
-
+      // Handle end - remove duplicate, already set above
       // Start recognition
       this.recognition.start()
       this.isListening = true
+      console.log('Speech recognition started successfully')
     } catch (err: any) {
       this.onErrorCallback?.(new Error(`Failed to start speech recognition: ${err.message}`))
       this.isListening = false

@@ -38,7 +38,7 @@ export default function LegalPage() {
   const [question, setQuestion] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ResponseBody | null>(null)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<string | null>(null)
   const [savedItems, setSavedItems] = useState<SavedGuidance[]>([])
   const [showHistory, setShowHistory] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -127,7 +127,7 @@ export default function LegalPage() {
       setError('Describe your issue or rights question first.')
       return
     }
-    setError('')
+    setError(null)
     setLoading(true)
     setResult(null)
 

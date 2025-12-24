@@ -167,14 +167,19 @@ class TextToSpeech {
     const voiceId = options.voiceId || options.voice
     
     if (!voiceId) {
-      console.error('ElevenLabs voiceId is required')
+      console.warn('ElevenLabs voiceId not provided, falling back to browser TTS')
       // Fallback to browser TTS
       if (this.synth) {
         return this.speak(text, { ...options, useElevenLabs: false })
       }
+      if (options.onEnd) {
+        options.onEnd()
+      }
       return Promise.resolve()
     }
 
+    console.log('Attempting ElevenLabs TTS with voice:', voiceId)
+    
     try {
       const response = await fetch('/api/elevenlabs/tts', {
         method: 'POST',
@@ -183,10 +188,32 @@ class TextToSpeech {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to generate speech')
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+        console.warn('ElevenLabs API failed:', response.status, errorData)
+        // Fallback to browser TTS
+        if (this.synth) {
+          console.log('Falling back to browser TTS')
+          return this.speak(text, { ...options, useElevenLabs: false })
+        }
+        if (options.onEnd) {
+          options.onEnd()
+        }
+        return Promise.resolve()
       }
 
       const data = await response.json()
+      
+      if (!data.audio) {
+        console.warn('ElevenLabs returned no audio data, falling back to browser TTS')
+        if (this.synth) {
+          return this.speak(text, { ...options, useElevenLabs: false })
+        }
+        if (options.onEnd) {
+          options.onEnd()
+        }
+        return Promise.resolve()
+      }
+      
       const audioData = Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
       
       // Create audio element and play
@@ -194,42 +221,51 @@ class TextToSpeech {
       const audioUrl = URL.createObjectURL(audioBlob)
       const audio = new Audio(audioUrl)
       
+      console.log('Playing ElevenLabs audio...')
+      
       return new Promise<void>((resolve) => {
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl)
-          if (options.onEnd) {
-            options.onEnd()
-          }
-          resolve()
-        }
+        let resolved = false
         
-        audio.onerror = (err) => {
-          URL.revokeObjectURL(audioUrl)
-          console.error('Error playing ElevenLabs audio:', err)
-          // Still call onEnd to continue conversation flow
-          if (options.onEnd) {
-            options.onEnd()
-          }
-          resolve()
-        }
-
-        audio.play().catch((err) => {
-          console.error('Error playing audio:', err)
-          URL.revokeObjectURL(audioUrl)
-          // Fallback to browser TTS
-          if (this.synth) {
-            this.speak(text, { ...options, useElevenLabs: false }).then(resolve)
-          } else {
+        const cleanup = () => {
+          if (!resolved) {
+            resolved = true
+            URL.revokeObjectURL(audioUrl)
             if (options.onEnd) {
               options.onEnd()
             }
             resolve()
           }
+        }
+        
+        audio.onended = () => {
+          console.log('ElevenLabs audio playback ended')
+          cleanup()
+        }
+        
+        audio.onerror = (err) => {
+          console.error('Error playing ElevenLabs audio:', err)
+          cleanup()
+        }
+
+        audio.play().catch((err) => {
+          console.error('Error playing audio, falling back to browser TTS:', err)
+          URL.revokeObjectURL(audioUrl)
+          // Fallback to browser TTS
+          if (this.synth) {
+            this.speak(text, { ...options, useElevenLabs: false }).then(() => {
+              if (!resolved) {
+                resolved = true
+                resolve()
+              }
+            })
+          } else {
+            cleanup()
+          }
         })
       })
-    } catch (error) {
-      console.error('ElevenLabs TTS error:', error)
-      // Fallback to browser TTS
+    } catch (error: any) {
+      console.error('ElevenLabs TTS error, falling back to browser TTS:', error)
+      // Always fallback to browser TTS
       if (this.synth) {
         return this.speak(text, { ...options, useElevenLabs: false })
       }
@@ -279,7 +315,7 @@ class SpeechRecognition {
     return this.recognition !== null
   }
 
-  start(
+  async start(
     onResult: (result: SpeechRecognitionResult) => void,
     onError?: (error: Error) => void,
     options: { lang?: string; continuous?: boolean } = {}
@@ -287,6 +323,12 @@ class SpeechRecognition {
     if (!this.recognition) {
       const error = new Error('Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.')
       onError?.(error)
+      return
+    }
+
+    // Prevent starting if already listening
+    if (this.isListening) {
+      console.log('Speech recognition already listening, skipping start')
       return
     }
 
@@ -313,14 +355,9 @@ class SpeechRecognition {
         console.log('Speech recognition ended')
         this.isListening = false
         
-        // If continuous mode, restart automatically
-        // Otherwise, the parent component will restart when ready
-        if (options.continuous && this.onResultCallback) {
-          setTimeout(() => {
-            console.log('Restarting continuous speech recognition...')
-            this.start(this.onResultCallback!, this.onErrorCallback || undefined, options)
-          }, 500)
-        }
+        // Clear callbacks to prevent restart loops
+        // Parent component will restart when ready
+        // Don't auto-restart here - let parent control it
       }
 
       // Handle results
@@ -374,30 +411,190 @@ class SpeechRecognition {
         this.isListening = false
       }
 
-      // Handle end - remove duplicate, already set above
-      // Start recognition
-      this.recognition.start()
-      this.isListening = true
-      console.log('Speech recognition started successfully')
+      // Start recognition - handle "already started" errors with reset
+      try {
+        // Always try to stop first if we think we're listening
+        if (this.isListening) {
+          console.log('Recognition state says listening, stopping first...')
+          try {
+            this.recognition.stop()
+          } catch (stopErr) {
+            // Ignore stop errors - might already be stopped
+          }
+          // Reset state
+          this.isListening = false
+          // Small delay to ensure cleanup
+          await new Promise(resolve => setTimeout(resolve, 200))
+        }
+        
+        this.recognition.start()
+        this.isListening = true
+        console.log('Speech recognition started successfully')
+      } catch (startErr: any) {
+        // Check if error is because recognition is already started
+        if (startErr.message && startErr.message.includes('already started')) {
+          console.log('Recognition already started error, resetting recognition instance...')
+          try {
+            // Force stop and reset
+            this.forceStop()
+            await new Promise(resolve => setTimeout(resolve, 300))
+            
+            // Create a completely new recognition instance
+            this.reset()
+            await new Promise(resolve => setTimeout(resolve, 200))
+            
+            // Reconfigure the new instance
+            this.recognition.lang = options.lang || 'en-NG'
+            this.recognition.continuous = options.continuous ?? false
+            this.recognition.interimResults = true
+            
+            // Re-attach event handlers
+            this.recognition.onstart = () => {
+              console.log('Speech recognition started (after reset)')
+              this.isListening = true
+            }
+            
+            this.recognition.onend = () => {
+              console.log('Speech recognition ended')
+              this.isListening = false
+            }
+            
+            this.recognition.onresult = (event: any) => {
+              let finalTranscript = ''
+              let interimTranscript = ''
+
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript
+                if (event.results[i].isFinal) {
+                  finalTranscript += transcript + ' '
+                } else {
+                  interimTranscript += transcript
+                }
+              }
+
+              if (finalTranscript || interimTranscript) {
+                this.onResultCallback?.({
+                  transcript: finalTranscript.trim() || interimTranscript,
+                  confidence: event.results[event.resultIndex]?.[0]?.confidence || 0.8,
+                  isFinal: !!finalTranscript
+                })
+              }
+            }
+            
+            this.recognition.onerror = (event: any) => {
+              let errorMessage = 'Speech recognition error'
+              switch (event.error) {
+                case 'no-speech': errorMessage = 'No speech detected. Please try again.'; break
+                case 'audio-capture': errorMessage = 'No microphone found.'; break
+                case 'not-allowed': errorMessage = 'Microphone permission denied.'; break
+                case 'aborted': errorMessage = 'Speech recognition was aborted.'; break
+                case 'network': errorMessage = 'Network error.'; break
+                default: errorMessage = `Speech recognition error: ${event.error}`
+              }
+              this.onErrorCallback?.(new Error(errorMessage))
+              this.isListening = false
+            }
+            
+            // Now try starting the new instance
+            this.recognition.start()
+            this.isListening = true
+            console.log('Speech recognition reset and started successfully')
+          } catch (retryErr: any) {
+            console.error('Failed to reset recognition:', retryErr)
+            this.onErrorCallback?.(new Error(`Failed to start speech recognition: ${retryErr.message}`))
+            this.isListening = false
+          }
+          return
+        }
+        throw startErr
+      }
     } catch (err: any) {
+      console.error('Speech recognition start error:', err)
       this.onErrorCallback?.(new Error(`Failed to start speech recognition: ${err.message}`))
       this.isListening = false
     }
   }
 
   stop() {
-    if (this.recognition && this.isListening) {
+    if (this.recognition) {
       try {
+        // Always try to stop, even if we think it's not listening
+        // This handles cases where state is out of sync
         this.recognition.stop()
-      } catch (err) {
-        console.error('Error stopping recognition:', err)
+      } catch (err: any) {
+        // Ignore errors if recognition is already stopped or not started
+        const errorMsg = err?.message || ''
+        if (!errorMsg.includes('not started') && !errorMsg.includes('already stopped')) {
+          console.error('Error stopping recognition:', err)
+        }
       }
+      
+      // Also try abort as a more aggressive stop
+      try {
+        this.recognition.abort()
+      } catch (abortErr) {
+        // Ignore abort errors
+      }
+      
       this.isListening = false
     }
   }
 
   getIsListening(): boolean {
-    return this.isListening
+    // Check both our internal state and the actual recognition state
+    if (this.recognition) {
+      // The recognition object doesn't expose a direct "isListening" property,
+      // but we can check if it's in a started state by checking if it has handlers
+      return this.isListening && this.onResultCallback !== null
+    }
+    return false
+  }
+
+  // Force stop and reset - useful for cleanup
+  forceStop() {
+    if (this.recognition) {
+      try {
+        // Remove all event listeners first
+        this.recognition.onstart = null
+        this.recognition.onend = null
+        this.recognition.onresult = null
+        this.recognition.onerror = null
+        
+        // Then stop/abort
+        this.recognition.stop()
+      } catch (err) {
+        // Ignore errors
+      }
+      
+      try {
+        this.recognition.abort()
+      } catch (err) {
+        // Ignore errors
+      }
+    }
+    this.isListening = false
+    this.onResultCallback = null
+    this.onErrorCallback = null
+  }
+  
+  // Reset recognition - creates a new instance
+  reset() {
+    this.forceStop()
+    
+    if (typeof window !== 'undefined') {
+      const SpeechRecognitionAPI = 
+        (window as any).SpeechRecognition || 
+        (window as any).webkitSpeechRecognition
+      
+      if (SpeechRecognitionAPI) {
+        try {
+          this.recognition = new SpeechRecognitionAPI()
+          console.log('Speech recognition reset successfully')
+        } catch (err) {
+          console.error('Failed to reset Speech Recognition:', err)
+        }
+      }
+    }
   }
 }
 
@@ -417,6 +614,14 @@ export function getSTTHandler(): SpeechRecognition {
     sttInstance = new SpeechRecognition()
   }
   return sttInstance
+}
+
+// Reset the singleton instance - useful for recovery
+export function resetSTTHandler(): void {
+  if (sttInstance) {
+    sttInstance.forceStop()
+    sttInstance = null
+  }
 }
 
 

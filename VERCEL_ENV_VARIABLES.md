@@ -11,7 +11,8 @@ These are the **ONLY** environment variables you need to add to Vercel for the f
 NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 
-# OpenAI (for AI features in frontend API routes)
+# OpenAI (REQUIRED for legal assistant and voice conversations)
+# ⚠️ This is CRITICAL - without this, legal questions and voice mode will fail!
 OPENAI_API_KEY=sk-your-openai-api-key
 ```
 

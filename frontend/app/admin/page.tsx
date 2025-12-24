@@ -25,7 +25,7 @@ const NIGERIAN_VOICES: ElevenLabsVoice[] = [
   {
     id: 'JBFqnCBsd6RMkjVDRZzb',
     name: 'Nigerian Voice 1',
-    description: 'Natural Nigerian English accent'
+    description: 'Natural Nigerian English accent (Default)'
   },
   {
     id: 'it5NMxoQQ2INIh4XcO44',
@@ -128,14 +128,16 @@ export default function AdminPage() {
         }
       }
 
-      // Load ElevenLabs voice
+      // Load ElevenLabs voice - always default to first Nigerian voice if not set
       const savedElevenLabs = localStorage.getItem('voice2gov_elevenlabs_voice')
-      if (savedElevenLabs) {
+      if (savedElevenLabs && NIGERIAN_VOICES.find(v => v.id === savedElevenLabs)) {
         setSelectedElevenLabsVoice(savedElevenLabs)
       } else {
-        // Default to first Nigerian voice
-        setSelectedElevenLabsVoice(NIGERIAN_VOICES[0].id)
-        localStorage.setItem('voice2gov_elevenlabs_voice', NIGERIAN_VOICES[0].id)
+        // Default to first Nigerian voice (Nigerian Voice 1) - Natural Nigerian English accent
+        const defaultVoiceId = NIGERIAN_VOICES[0].id
+        setSelectedElevenLabsVoice(defaultVoiceId)
+        localStorage.setItem('voice2gov_elevenlabs_voice', defaultVoiceId)
+        console.log('Set default Nigerian voice:', NIGERIAN_VOICES[0].name, defaultVoiceId)
       }
     }
   }
@@ -458,7 +460,7 @@ export default function AdminPage() {
                   Choose from your saved Nigerian voices. These are high-quality voices optimized for Nigerian English.
                 </p>
                 <div className="space-y-3">
-                  {NIGERIAN_VOICES.map((voice) => (
+                  {NIGERIAN_VOICES.map((voice, index) => (
                     <div
                       key={voice.id}
                       className={`p-4 rounded-xl border-2 transition-all cursor-pointer ${
@@ -472,6 +474,11 @@ export default function AdminPage() {
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-1">
                             <h3 className="font-medium text-slate-900">{voice.name}</h3>
+                            {index === 0 && (
+                              <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full font-medium">
+                                Default
+                              </span>
+                            )}
                             {selectedElevenLabsVoice === voice.id && (
                               <Check className="w-5 h-5 text-ng-green-600" />
                             )}

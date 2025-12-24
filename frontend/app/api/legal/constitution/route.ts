@@ -50,31 +50,57 @@ export async function POST(request: NextRequest) {
     // Build search query for each keyword
     let sections: any[] = []
     
-    for (const keyword of keywords.slice(0, 3)) { // Search top 3 keywords
-      const { data: keywordDocs } = await supabase
-        .from('legal_documents')
-        .select('*')
-        .or(`content.ilike.%${keyword}%,heading.ilike.%${keyword}%,section.ilike.%${keyword}%`)
-        .limit(3)
-      
-      if (keywordDocs) {
-        // Add unique docs only
-        for (const doc of keywordDocs) {
-          if (!sections.find(s => s.id === doc.id)) {
-            sections.push(doc)
+    // Escape special characters for Supabase queries
+    const escapeForQuery = (str: string) => {
+      return str.replace(/[%_\\]/g, '\\$&')
+    }
+    
+    try {
+      for (const keyword of keywords.slice(0, 3)) { // Search top 3 keywords
+        if (!keyword || keyword.trim().length === 0) continue
+        
+        const escapedKeyword = escapeForQuery(keyword.trim())
+        const { data: keywordDocs, error: keywordError } = await supabase
+          .from('legal_documents')
+          .select('*')
+          .or(`content.ilike.%${escapedKeyword}%,heading.ilike.%${escapedKeyword}%,section.ilike.%${escapedKeyword}%`)
+          .limit(3)
+        
+        if (keywordError) {
+          console.error('Supabase keyword search error:', keywordError)
+          continue
+        }
+        
+        if (keywordDocs) {
+          // Add unique docs only
+          for (const doc of keywordDocs) {
+            if (!sections.find(s => s.id === doc.id)) {
+              sections.push(doc)
+            }
           }
         }
       }
-    }
 
-    // If still no matches, search the full question
-    if (sections.length === 0) {
-      const { data: docs } = await supabase
-        .from('legal_documents')
-        .select('*')
-        .or(`content.ilike.%${question}%,heading.ilike.%${question}%`)
-        .limit(5)
-      sections = docs || []
+      // If still no matches, search the full question
+      if (sections.length === 0) {
+        const escapedQuestion = escapeForQuery(question.trim())
+        const { data: docs, error: questionError } = await supabase
+          .from('legal_documents')
+          .select('*')
+          .or(`content.ilike.%${escapedQuestion}%,heading.ilike.%${escapedQuestion}%`)
+          .limit(5)
+        
+        if (questionError) {
+          console.error('Supabase question search error:', questionError)
+          // Continue without sections - AI can still answer
+        } else {
+          sections = docs || []
+        }
+      }
+    } catch (searchError: any) {
+      console.error('Database search error:', searchError)
+      // Continue without sections - AI can still answer without context
+      sections = []
     }
 
     // Only use fallback if absolutely nothing found - and choose relevant fallback
@@ -252,8 +278,31 @@ Remember: Be helpful, practical, and comprehensive. Reference ALL relevant laws,
       answer,
       sections: formattedSections,
     })
-  } catch (error) {
-    console.error('Legal API error:', error)
+  } catch (error: any) {
+    console.error('Legal API error:', {
+      message: error?.message,
+      stack: error?.stack?.substring(0, 300),
+      name: error?.name
+    })
+    
+    // Provide more specific error messages
+    if (error?.message?.includes('ByteString')) {
+      return NextResponse.json(
+        { error: 'Database query error. Please try rephrasing your question.' },
+        { status: 500 }
+      )
+    } else if (error?.message?.includes('OpenAI') || error?.message?.includes('API key')) {
+      return NextResponse.json(
+        { error: 'OpenAI API error. Please check your API key configuration.' },
+        { status: 503 }
+      )
+    } else if (error?.message) {
+      return NextResponse.json(
+        { error: `Error: ${error.message}` },
+        { status: 500 }
+      )
+    }
+    
     return NextResponse.json(
       { error: 'Failed to process your question. Please try again.' },
       { status: 500 }

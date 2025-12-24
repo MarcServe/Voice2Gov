@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Bookmark, BookmarkCheck, Copy, Check, History, Trash2, X, Mic, MicOff, Volume2, VolumeX, MessageCircle, Loader2, AlertCircle, FileText } from 'lucide-react'
 import { VoiceAssistant } from '@/components/VoiceAssistant'
-import { getSTTHandler, getTTSHandler } from '@/lib/speech'
+import { getSTTHandler, getTTSHandler, resetSTTHandler } from '@/lib/speech'
 
 interface Section {
   id: number
@@ -56,6 +56,7 @@ export default function LegalPage() {
   const sttRef = useRef<ReturnType<typeof getSTTHandler> | null>(null)
   const ttsRef = useRef<ReturnType<typeof getTTSHandler> | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const conversationRef = useRef<ConversationMessage[]>([]) // Ref to track latest conversation state
 
   // Load saved items from localStorage on mount
   useEffect(() => {
@@ -71,9 +72,10 @@ export default function LegalPage() {
     ttsRef.current = getTTSHandler()
   }, [])
 
-  // Scroll to bottom of conversation
+  // Scroll to bottom of conversation and sync ref
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    conversationRef.current = conversation // Keep ref in sync with state
   }, [conversation])
 
   // Save to localStorage
@@ -132,18 +134,39 @@ export default function LegalPage() {
     setResult(null)
 
     try {
+      console.log('Sending question to API:', questionToAsk)
       const response = await fetch('/api/legal/constitution', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: questionToAsk }),
       })
 
+      console.log('API response status:', response.status)
+
       if (!response.ok) {
-        const message = await response.text()
-        throw new Error(message || 'Unable to reach the legal assistant.')
+        let errorMessage = 'Unable to reach the legal assistant.'
+        try {
+          const errorData = await response.json()
+          errorMessage = errorData.error || errorData.message || errorMessage
+          console.error('API error:', errorData)
+        } catch {
+          const textResponse = await response.text()
+          errorMessage = textResponse || errorMessage
+          console.error('API error (text):', textResponse)
+        }
+        
+        // Provide helpful error messages
+        if (response.status === 503 && errorMessage.includes('OpenAI')) {
+          throw new Error('OpenAI API is not configured. Please add OPENAI_API_KEY to your Vercel environment variables.')
+        } else if (response.status === 503) {
+          throw new Error('AI service is temporarily unavailable. Please check your API configuration.')
+        } else {
+          throw new Error(errorMessage)
+        }
       }
 
       const data: ResponseBody = await response.json()
+      console.log('API response received successfully')
       setResult(data)
       
       // If in voice mode, add to conversation and speak
@@ -165,7 +188,21 @@ export default function LegalPage() {
   // Voice conversation handlers
   const startVoiceListening = async () => {
     if (!sttRef.current?.isSupported()) {
-      setError('Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.')
+      // Detect browser for better error message
+      const userAgent = navigator.userAgent.toLowerCase()
+      let browserName = 'your browser'
+      if (userAgent.includes('firefox')) browserName = 'Firefox'
+      else if (userAgent.includes('chrome')) browserName = 'Chrome'
+      else if (userAgent.includes('safari')) browserName = 'Safari'
+      else if (userAgent.includes('edge')) browserName = 'Edge'
+      
+      setError(`Speech recognition is not supported in ${browserName}. Voice mode requires Chrome, Edge, or Safari. You can still use Text Mode to chat with the assistant.`)
+      return
+    }
+
+    // Prevent starting if already listening
+    if (isListening) {
+      console.log('Already listening, skipping start')
       return
     }
 
@@ -201,7 +238,42 @@ export default function LegalPage() {
 
     try {
       console.log('Starting speech recognition with language:', selectedLanguage)
-      sttRef.current.start(
+      
+      // Aggressively stop and reset recognition to ensure clean state
+      if (sttRef.current) {
+        console.log('Stopping existing recognition...')
+        try {
+          sttRef.current.forceStop()
+        } catch (err) {
+          console.warn('Error in forceStop:', err)
+        }
+        // Wait longer to ensure cleanup
+        await new Promise(resolve => setTimeout(resolve, 500))
+        
+        // Reset the singleton instance completely
+        resetSTTHandler()
+        await new Promise(resolve => setTimeout(resolve, 200))
+        
+        // Get a fresh instance
+        sttRef.current = getSTTHandler()
+      }
+      
+      // Double-check we're not already listening before starting
+      if (isListening || (sttRef.current && sttRef.current.getIsListening())) {
+        console.log('Still listening after reset, aborting start')
+        setIsListening(false)
+        return
+      }
+      
+      // Ensure we have a fresh recognition instance
+      if (!sttRef.current || !sttRef.current.isSupported()) {
+        console.error('Speech recognition not available after reset')
+        setError('Speech recognition is not available. Please refresh the page.')
+        return
+      }
+      
+      console.log('Starting fresh recognition instance...')
+      await sttRef.current.start(
         (result) => {
           console.log('Speech recognition result:', { 
             transcript: result.transcript.substring(0, 50), 
@@ -213,15 +285,10 @@ export default function LegalPage() {
             const transcript = result.transcript.trim()
             console.log('Final transcript received:', transcript)
             setVoiceTranscript('')
-            setIsListening(false) // Stop listening while processing
+            // Stop listening before processing
+            stopVoiceListening()
             handleVoiceQuestion(transcript)
-            // Auto-restart listening after processing
-            setTimeout(() => {
-              if (voiceMode && !isSpeaking && !isListening) {
-                console.log('Auto-restarting listening after question processed')
-                startVoiceListening()
-              }
-            }, 2000) // Give more time for API call
+            // Don't auto-restart here - let speakAnswer handle it after TTS completes
           } else {
             // Show interim results
             setVoiceTranscript(result.transcript)
@@ -241,34 +308,64 @@ export default function LegalPage() {
   }
 
   const stopVoiceListening = () => {
+    console.log('Stopping voice listening...')
     if (sttRef.current) {
       sttRef.current.stop()
     }
     setIsListening(false)
+    // Clear any pending timeouts that might restart listening
+    // (This is handled by checking state before restarting)
   }
 
   const handleVoiceQuestion = async (questionText: string) => {
-    if (!questionText.trim()) return
+    if (!questionText || !questionText.trim()) {
+      console.warn('Empty question text provided')
+      return
+    }
 
     console.log('Handling voice question:', questionText)
     setVoiceProcessing(true)
-    const userMessage: ConversationMessage = { role: 'user', content: questionText, timestamp: new Date() }
     
-    // Update conversation state and get the updated list
-    let updatedConversation: ConversationMessage[] = []
-    setConversation(prev => {
-      updatedConversation = [...prev, userMessage]
-      return updatedConversation
-    })
+    const trimmedQuestion = questionText.trim()
+    const userMessage: ConversationMessage = { 
+      role: 'user', 
+      content: trimmedQuestion, 
+      timestamp: new Date() 
+    }
+    
+    // Get current conversation from ref (always up-to-date) and add user message
+    const currentConversation = conversationRef.current || []
+    console.log('Current conversation length:', currentConversation.length)
+    
+    const updatedConversation = [...currentConversation, userMessage]
+    console.log('Updated conversation length:', updatedConversation.length)
+    
+    // Update both state and ref immediately
+    setConversation(updatedConversation)
+    conversationRef.current = updatedConversation
 
     try {
-      console.log('Calling /api/legal/chat with messages:', updatedConversation.length)
+      // Format messages for API - ensure we have valid messages
+      const formattedMessages = updatedConversation
+        .filter(m => m && m.role && m.content && m.content.trim())
+        .map(m => ({ 
+          role: m.role as 'user' | 'assistant', 
+          content: m.content.trim() 
+        }))
+      
+      if (formattedMessages.length === 0) {
+        throw new Error('No valid messages to send. Please try again.')
+      }
+      
+      console.log('Calling /api/legal/chat with messages:', formattedMessages.length)
+      console.log('Conversation history:', formattedMessages.map(m => `${m.role}: ${m.content.substring(0, 50)}...`))
+      
       // Use the chat API for real-time conversation
       const response = await fetch('/api/legal/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: updatedConversation.map(m => ({ role: m.role, content: m.content })),
+          messages: formattedMessages,
           context: result?.answer // Include previous context if available
         }),
       })
@@ -276,24 +373,51 @@ export default function LegalPage() {
       console.log('API response status:', response.status)
 
       if (!response.ok) {
-        const errorText = await response.text()
-        console.error('API error:', response.status, errorText)
-        throw new Error(`API error: ${response.status} - ${errorText}`)
+        let errorText = ''
+        try {
+          const errorData = await response.json()
+          errorText = errorData.error || errorData.message || 'Unknown error'
+          console.error('API error response:', errorData)
+        } catch (parseError) {
+          const textResponse = await response.text()
+          errorText = textResponse || `HTTP ${response.status}`
+          console.error('API error (text):', textResponse)
+        }
+        console.error('API error details:', { status: response.status, error: errorText })
+        
+        // Provide user-friendly error messages
+        if (response.status === 503 && errorText.includes('OpenAI')) {
+          throw new Error('OpenAI service is not configured. Please check your API keys in Vercel environment variables.')
+        } else if (response.status === 503) {
+          throw new Error('AI service is temporarily unavailable. Please try again.')
+        } else if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please wait a moment and try again.')
+        } else if (response.status === 500) {
+          throw new Error('Server error. Please try again in a moment.')
+        } else {
+          throw new Error(`Failed to get response: ${errorText}`)
+        }
       }
 
       const data = await response.json()
       console.log('API response data:', data)
       
-      if (!data.response) {
-        throw new Error('No response from API')
+      if (!data || !data.response) {
+        console.error('API returned invalid response:', data)
+        throw new Error('Invalid response from server. Please try again.')
       }
+      
+      console.log('Successfully received response:', data.response.substring(0, 100))
 
       const assistantMessage: ConversationMessage = { 
         role: 'assistant', 
         content: data.response, 
         timestamp: new Date() 
       }
-      setConversation(prev => [...prev, assistantMessage])
+      // Update both state and ref with assistant response
+      const finalConversation = [...conversationRef.current, assistantMessage]
+      setConversation(finalConversation)
+      conversationRef.current = finalConversation
       
       // Also update result for display consistency
       if (!result) {
@@ -310,11 +434,14 @@ export default function LegalPage() {
       console.error('Error in handleVoiceQuestion:', err)
       const errorMessage = err.message || 'Failed to get response. Please try again.'
       setError(errorMessage)
-      setConversation(prev => [...prev, { 
+      const errorAssistantMessage: ConversationMessage = { 
         role: 'assistant', 
         content: `I'm sorry, I couldn't process that. ${errorMessage.includes('OpenAI') ? 'The AI service may not be configured.' : 'Please try again.'}`, 
         timestamp: new Date() 
-      }])
+      }
+      const errorConversation = [...conversationRef.current, errorAssistantMessage]
+      setConversation(errorConversation)
+      conversationRef.current = errorConversation
       // Still try to restart listening even on error
       if (voiceMode && !isListening) {
         setTimeout(() => {
@@ -327,64 +454,147 @@ export default function LegalPage() {
   }
 
   const speakAnswer = async (text: string) => {
-    if (!ttsRef.current) return
+    if (!ttsRef.current) {
+      console.error('TTS handler not initialized')
+      setIsSpeaking(false)
+      return
+    }
+    
+    if (!text || !text.trim()) {
+      console.warn('Empty text provided to speakAnswer')
+      setIsSpeaking(false)
+      return
+    }
+    
     setIsSpeaking(true)
+    console.log('Starting TTS for:', text.substring(0, 50) + '...')
     
     try {
       // Get selected voice from localStorage - prioritize user preference, then admin preference
       const userElevenLabsVoice = localStorage.getItem('voice2gov_user_voice')
       const adminElevenLabsVoice = localStorage.getItem('voice2gov_elevenlabs_voice')
-      const savedElevenLabsVoice = userElevenLabsVoice || adminElevenLabsVoice
+      
+      // Default Nigerian voices if none selected
+      const DEFAULT_NIGERIAN_VOICES = [
+        'JBFqnCBsd6RMkjVDRZzb', // Nigerian Voice 1
+        'it5NMxoQQ2INIh4XcO44', // Nigerian Voice 2
+        'ZXZq039skp0kfF9gO7Au', // Nigerian Voice 3
+        '77aEIu0qStu8Jwv1EdhX'  // Nigerian Voice 4
+      ]
+      
+      // Use user preference, then admin preference, then default to first Nigerian voice
+      let savedElevenLabsVoice = userElevenLabsVoice || adminElevenLabsVoice
+      
+      // If no voice is set, use the first Nigerian voice as default
+      if (!savedElevenLabsVoice || !DEFAULT_NIGERIAN_VOICES.includes(savedElevenLabsVoice)) {
+        savedElevenLabsVoice = DEFAULT_NIGERIAN_VOICES[0]
+        // Save it for future use
+        if (!adminElevenLabsVoice) {
+          localStorage.setItem('voice2gov_elevenlabs_voice', savedElevenLabsVoice)
+        }
+        console.log('Using default Nigerian voice:', savedElevenLabsVoice)
+      }
       
       const savedBrowserVoice = localStorage.getItem('voice2gov_selected_voice')
       
-      // Use ElevenLabs if available, otherwise fallback to browser TTS
-      if (savedElevenLabsVoice) {
-        await ttsRef.current.speak(text, {
-          lang: selectedLanguage,
-          voiceId: savedElevenLabsVoice,
-          useElevenLabs: true,
-          onEnd: () => {
-            setIsSpeaking(false)
-            // Auto-restart listening after speaking ends
-            console.log('Speech ended, restarting listening...', { voiceMode, isListening, isSpeaking })
-            if (voiceMode && !isListening) {
-              setTimeout(() => {
-                console.log('Starting voice listening after speech end')
-                startVoiceListening().catch(err => {
-                  console.error('Failed to restart listening:', err)
-                })
-              }, 800)
-            }
-          }
+      const onSpeechEnd = () => {
+        console.log('TTS ended, preparing to restart listening...', { 
+          voiceMode, 
+          isListening, 
+          isSpeaking: false,
+          voiceProcessing 
         })
+        setIsSpeaking(false)
+        
+        // Auto-restart listening after speaking ends
+        if (voiceMode && !isListening && !voiceProcessing) {
+          // Longer delay to ensure TTS is completely done and recognition can start fresh
+          setTimeout(async () => {
+            // Double-check state before starting
+            if (voiceMode && !isListening && !isSpeaking && !voiceProcessing) {
+              console.log('Starting voice listening after speech end')
+              // Reset recognition to ensure clean start - this prevents "already started" errors
+              try {
+                if (sttRef.current) {
+                  resetSTTHandler()
+                  // Small delay to ensure cleanup
+                  await new Promise(resolve => setTimeout(resolve, 300))
+                  sttRef.current = getSTTHandler()
+                }
+                await startVoiceListening()
+              } catch (err: any) {
+                console.error('Failed to restart listening after TTS:', err)
+                // If it fails, try one more time after a delay with another reset
+                setTimeout(async () => {
+                  if (voiceMode && !isListening && !isSpeaking && !voiceProcessing) {
+                    console.log('Retrying voice listening with reset...')
+                    try {
+                      resetSTTHandler()
+                      await new Promise(resolve => setTimeout(resolve, 300))
+                      sttRef.current = getSTTHandler()
+                      await startVoiceListening()
+                    } catch (retryErr: any) {
+                      console.error('Retry also failed:', retryErr)
+                      setError(`Failed to restart voice listening: ${retryErr.message}. Please click the microphone button manually.`)
+                    }
+                  }
+                }, 2000)
+              }
+            } else {
+              console.log('Skipping restart - state check failed:', {
+                voiceMode,
+                isListening,
+                isSpeaking,
+                voiceProcessing
+              })
+            }
+          }, 1500) // Longer delay to ensure everything is settled
+        }
+      }
+      
+      // Always try ElevenLabs first if voice is set, but fallback to browser TTS if it fails
+      if (savedElevenLabsVoice) {
+        console.log('Attempting ElevenLabs TTS with voice:', savedElevenLabsVoice)
+        try {
+          await ttsRef.current.speak(text, {
+            lang: selectedLanguage,
+            voiceId: savedElevenLabsVoice,
+            useElevenLabs: true,
+            onEnd: onSpeechEnd
+          })
+          console.log('ElevenLabs TTS completed successfully')
+        } catch (elevenLabsError: any) {
+          console.warn('ElevenLabs TTS failed, using browser TTS fallback:', elevenLabsError)
+          // Fallback to browser TTS
+          await ttsRef.current.speak(text, {
+            lang: selectedLanguage,
+            voice: savedBrowserVoice || undefined,
+            useElevenLabs: false,
+            onEnd: onSpeechEnd
+          })
+        }
       } else {
+        console.log('Using browser TTS (no ElevenLabs voice configured)')
         await ttsRef.current.speak(text, {
           lang: selectedLanguage,
           voice: savedBrowserVoice || undefined,
-          onEnd: () => {
-            setIsSpeaking(false)
-            // Auto-restart listening after speaking ends
-            console.log('Speech ended, restarting listening...', { voiceMode, isListening, isSpeaking })
-            if (voiceMode && !isListening) {
-              setTimeout(() => {
-                console.log('Starting voice listening after speech end')
-                startVoiceListening().catch(err => {
-                  console.error('Failed to restart listening:', err)
-                })
-              }, 800)
-            }
-          }
+          useElevenLabs: false,
+          onEnd: onSpeechEnd
         })
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error speaking answer:', error)
+      setError(`Failed to speak response: ${error.message || 'Unknown error'}`)
       setIsSpeaking(false)
       // Still try to restart listening even if speaking failed
-      if (voiceMode && !isListening) {
+      if (voiceMode && !isListening && !voiceProcessing) {
         setTimeout(() => {
-          startVoiceListening()
-        }, 500)
+          if (!isListening && !isSpeaking) {
+            startVoiceListening().catch(err => {
+              console.error('Failed to restart listening after TTS error:', err)
+            })
+          }
+        }, 1000)
       }
     }
   }
@@ -398,6 +608,7 @@ export default function LegalPage() {
 
   const clearConversation = () => {
     setConversation([])
+    conversationRef.current = [] // Clear ref as well
     stopSpeaking()
     stopVoiceListening()
   }
@@ -456,18 +667,28 @@ export default function LegalPage() {
                 if (conversation.length === 0) {
                   // Start with a greeting
                   const greeting = "Hello! I'm your Nigerian legal assistant. I can help you understand your rights under Nigerian law. What would you like to know?"
-                  setConversation([{ role: 'assistant', content: greeting, timestamp: new Date() }])
+                  const greetingMessage: ConversationMessage = { role: 'assistant', content: greeting, timestamp: new Date() }
+                  setConversation([greetingMessage])
+                  conversationRef.current = [greetingMessage] // Initialize ref
                   // Wait a bit for TTS to initialize, then speak and auto-start mic
                   setTimeout(async () => {
                     await speakAnswer(greeting)
-                    // Ensure mic starts after greeting (backup in case onEnd doesn't fire)
+                    // Backup: Ensure mic starts after greeting (in case onEnd doesn't fire)
+                    // The onSpeechEnd callback should handle this, but this is a safety net
                     setTimeout(() => {
-                      if (voiceMode && !isListening && !isSpeaking) {
-                        console.log('Starting voice listening after greeting...')
-                        startVoiceListening()
+                      if (voiceMode && !isListening && !isSpeaking && !voiceProcessing) {
+                        console.log('Backup: Starting voice listening after greeting...')
+                        // Reset to ensure clean state before starting
+                        if (sttRef.current) {
+                          resetSTTHandler()
+                          sttRef.current = getSTTHandler()
+                        }
+                        startVoiceListening().catch(err => {
+                          console.error('Backup restart failed:', err)
+                        })
                       }
-                    }, 1500)
-                  }, 300)
+                    }, 2000) // Longer delay to ensure TTS is done
+                  }, 500) // Slightly longer initial delay
                 } else {
                   // If conversation already exists, just start listening
                   if (!isListening && !isSpeaking) {
@@ -495,6 +716,11 @@ export default function LegalPage() {
               <div className="flex items-center gap-2">
                 <MessageCircle className="w-5 h-5 text-ng-green-600" />
                 <h2 className="font-semibold text-slate-900">Voice Conversation</h2>
+                {!sttRef.current?.isSupported() && (
+                  <span className="ml-2 px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded-full">
+                    Voice input unavailable
+                  </span>
+                )}
               </div>
               {conversation.length > 0 && (
                 <button
@@ -505,13 +731,63 @@ export default function LegalPage() {
                 </button>
               )}
             </div>
+            
+            {/* Text Input Fallback for Unsupported Browsers */}
+            {!sttRef.current?.isSupported() && (
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-start gap-3">
+                  <FileText className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-blue-800 font-medium mb-2">Voice input not available in your browser</p>
+                    <p className="text-blue-700 text-sm mb-3">You can still chat with the assistant using text input below:</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={question}
+                        onChange={(e) => setQuestion(e.target.value)}
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter' && question.trim()) {
+                            handleVoiceQuestion(question.trim())
+                            setQuestion('')
+                          }
+                        }}
+                        placeholder="Type your question here..."
+                        className="flex-1 px-4 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <button
+                        onClick={() => {
+                          if (question.trim()) {
+                            handleVoiceQuestion(question.trim())
+                            setQuestion('')
+                          }
+                        }}
+                        disabled={!question.trim() || voiceProcessing}
+                        className="px-4 py-2 bg-ng-green-500 text-white rounded-lg hover:bg-ng-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Send
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Conversation Messages */}
             <div className="bg-slate-50 rounded-xl p-4 min-h-[300px] max-h-[500px] overflow-y-auto space-y-4">
               {conversation.length === 0 ? (
                 <div className="text-center text-slate-500 py-12">
-                  <Mic className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                  <p>Tap the microphone to start asking about your rights</p>
+                  {sttRef.current?.isSupported() ? (
+                    <>
+                      <Mic className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                      <p>Tap the microphone to start asking about your rights</p>
+                    </>
+                  ) : (
+                    <>
+                      <MessageCircle className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                      <p className="mb-2">Voice input is not available in your browser</p>
+                      <p className="text-sm">Use the text input below to chat with the assistant</p>
+                    </>
+                  )}
                 </div>
               ) : (
                 conversation.map((msg, idx) => (
@@ -571,30 +847,74 @@ export default function LegalPage() {
 
               <button
                 onClick={isListening ? stopVoiceListening : startVoiceListening}
-                disabled={voiceProcessing || isSpeaking}
+                disabled={voiceProcessing || isSpeaking || !sttRef.current?.isSupported()}
                 className={`p-6 rounded-full transition-all transform ${
                   isListening
                     ? 'bg-red-500 text-white scale-110 animate-pulse'
+                    : !sttRef.current?.isSupported()
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
                     : 'bg-ng-green-500 text-white hover:bg-ng-green-600 hover:scale-105'
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
-                title={isListening ? 'Stop listening' : 'Start listening'}
+                title={
+                  !sttRef.current?.isSupported()
+                    ? 'Voice input not supported in this browser'
+                    : isListening
+                    ? 'Stop listening'
+                    : 'Start listening'
+                }
               >
                 {isListening ? <MicOff className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
               </button>
 
+              {/* Text Input for Unsupported Browsers */}
+              {!sttRef.current?.isSupported() && (
+                <div className="flex-1 max-w-md">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter' && question.trim() && !voiceProcessing) {
+                          handleVoiceQuestion(question.trim())
+                          setQuestion('')
+                        }
+                      }}
+                      placeholder="Type your question..."
+                      disabled={voiceProcessing || isSpeaking}
+                      className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-ng-green-500 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={() => {
+                        if (question.trim() && !voiceProcessing) {
+                          handleVoiceQuestion(question.trim())
+                          setQuestion('')
+                        }
+                      }}
+                      disabled={!question.trim() || voiceProcessing || isSpeaking}
+                      className="px-4 py-2 bg-ng-green-500 text-white rounded-lg hover:bg-ng-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Send
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Test API Button - for debugging */}
-              <button
-                onClick={async () => {
-                  const testQuestion = "What are my rights as a tenant?"
-                  console.log('🧪 Testing API with question:', testQuestion)
-                  await handleVoiceQuestion(testQuestion)
-                }}
-                disabled={voiceProcessing || isSpeaking}
-                className="px-4 py-2 text-xs bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 disabled:opacity-50"
-                title="Test API connection"
-              >
-                Test API
-              </button>
+              {sttRef.current?.isSupported() && (
+                <button
+                  onClick={async () => {
+                    const testQuestion = "What are my rights as a tenant?"
+                    console.log('🧪 Testing API with question:', testQuestion)
+                    await handleVoiceQuestion(testQuestion)
+                  }}
+                  disabled={voiceProcessing || isSpeaking}
+                  className="px-4 py-2 text-xs bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 disabled:opacity-50"
+                  title="Test API connection"
+                >
+                  Test API
+                </button>
+              )}
 
               <div className="w-20 text-center">
                 {isListening && <span className="text-xs text-red-500 font-medium">Listening...</span>}
@@ -604,8 +924,24 @@ export default function LegalPage() {
             </div>
 
             {error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
-                {error}
+              <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-red-800 font-medium mb-1">Browser Compatibility Issue</p>
+                    <p className="text-red-600 text-sm">{error}</p>
+                    {error.includes('Speech recognition is not supported') && (
+                      <div className="mt-3 pt-3 border-t border-red-200">
+                        <p className="text-red-700 text-sm font-medium mb-2">Quick Solutions:</p>
+                        <ul className="text-red-600 text-sm space-y-1 list-disc list-inside">
+                          <li>Switch to <strong>Text Mode</strong> (button above) to continue chatting</li>
+                          <li>Use Chrome, Edge, or Safari for voice features</li>
+                          <li>Voice mode will work once you switch browsers</li>
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
